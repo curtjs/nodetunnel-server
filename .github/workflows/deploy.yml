@@ -20,7 +20,5 @@ jobs:
             export PATH="/usr/share/dotnet:$PATH"
             cd /root/nodetunnel-server
             git pull origin main
-            dotnet --version
             dotnet build -c Release
-            pkill -f "dotnet.*NodeTunnel" || true
-            nohup dotnet run --configuration Release > /dev/null 2>&1 &
+            sudo systemctl restart nodetunnel
