@@ -3,17 +3,22 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using NodeTunnel.UDP;
 using NodeTunnel.Utils;
 
 namespace NodeTunnel.TCP;
 
 public class TCPHandler {
+    public event Action<string> PeerDisconnected;
+    public event Action<IEnumerable<string>> PeersDisconnected; 
+    
     private TcpListener _tcp;
     private CancellationTokenSource _ct;
     
     private readonly ConcurrentDictionary<string, Room> _rooms = new();
     private readonly ConcurrentDictionary<string, string> _oidToRid = new();
-
+    private readonly ConcurrentDictionary<TcpClient, string> _tcpToOid = new();
+    
     public async Task StartTcpAsync(string host = "0.0.0.0", int port = 9998) {
         _tcp = new TcpListener(IPAddress.Parse(host), port);
         _tcp.Start();
@@ -41,7 +46,10 @@ public class TCPHandler {
 
             while (client.Connected && !_ct.Token.IsCancellationRequested) {
                 var bytes = await stream.ReadAsync(buff, 0, buff.Length);
-                if (bytes == 0) break;
+                if (bytes == 0) {
+                    DisconnectClient(client);
+                    break;
+                }
 
                 msgBuff.AddRange(buff.Take(bytes));
 
@@ -49,7 +57,7 @@ public class TCPHandler {
                     var msgLen = ByteUtils.UnpackU32(msgBuff.ToArray(), 0);
 
                     if (msgBuff.Count >= 4 + msgLen) {
-                        var msgData = msgBuff.Skip(4).Take((int)msgLen).ToArray(); // no need for the first uint
+                        var msgData = msgBuff.Skip(4).Take((int)msgLen).ToArray();
                         msgBuff.RemoveRange(0, 4 + (int)msgLen);
 
                         await HandleTcpMessage(msgData, client);
@@ -66,6 +74,41 @@ public class TCPHandler {
         finally {
             client.Close();
         }
+    }
+
+    private void DisconnectClient(TcpClient client) {
+        if (!_tcpToOid.TryGetValue(client, out var oid)) return;
+        
+        var room = GetRoomForPeer(oid);
+        if (room == null) return;
+
+        if (room.Id == oid) {
+            Console.WriteLine($"Host {oid} disconnecting, closing room");
+
+            var allOids = room.Clients.Keys.ToList();
+            var clientsToClose = room.Clients.Values.Where(c => c != client).ToList();
+            _rooms.TryRemove(room.Id, out _);
+
+            foreach (var clientToClose in clientsToClose) {
+                try {
+                    clientToClose.Close();
+                    _tcpToOid.TryRemove(clientToClose, out _);
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"Error closing client: {ex.Message}");
+                }
+            }
+            
+            PeersDisconnected.Invoke(allOids);
+        }
+        else {
+            // disconnect myself
+            room.RemovePeer(oid);
+            _ = Task.Run(() => SendPeerList(room));
+            PeerDisconnected?.Invoke(oid);
+        }
+
+        _tcpToOid.TryRemove(client, out _);
     }
 
     private async Task SendTcpMessage(TcpClient client, byte[] data) {
@@ -116,6 +159,7 @@ public class TCPHandler {
      */
     private async Task HandleConnect(TcpClient client) {
         var oid = GenerateOid();
+        _tcpToOid[client] = oid;
         
         Console.WriteLine($"OID Generated: {oid}");
 
@@ -155,7 +199,7 @@ public class TCPHandler {
         var oid = Encoding.UTF8.GetString(data, 4, oidLen);
 
         var hostOidLen = (int)ByteUtils.UnpackU32(data, 4 + oidLen);
-        var hostOid = Encoding.UTF8.GetString(data, 8 + hostOidLen, hostOidLen);
+        var hostOid = Encoding.UTF8.GetString(data, 8 + oidLen, hostOidLen);
 
         if (_rooms.TryGetValue(hostOid, out var room)) {
             room.AddPeer(oid, client);
@@ -195,7 +239,7 @@ public class TCPHandler {
     /**
      * Gets the room that the given peer is in
      */
-    public Room GetRoomForPeer(string oid) {
+    public Room? GetRoomForPeer(string oid) {
         return _rooms.Values.FirstOrDefault(room => room.HasPeer(oid));
     }
 

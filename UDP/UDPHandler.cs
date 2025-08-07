@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -10,7 +11,7 @@ public class UDPHandler {
     private UdpClient _udp;
     private TCPHandler _tcp;
     private CancellationTokenSource _ct;
-    private readonly Dictionary<string, IPEndPoint> _oidToEndpoint = new();
+    private ConcurrentDictionary<string, IPEndPoint> _oidToEndpoint = new();
 
     public UDPHandler(TCPHandler tcpHandler) {
         _tcp = tcpHandler;
@@ -50,7 +51,6 @@ public class UDPHandler {
                     var msg = Encoding.UTF8.GetString(gameData);
 
                     if (msg == "UDP_CONNECT") {
-                        Console.WriteLine("Sending back UDP connect");
                         var response = CreateRelayPacket("SERVER", senderOid, Encoding.UTF8.GetBytes("UDP_CONNECT_RES"));
                         await _udp.SendAsync(response, endpoint);
                     }
@@ -60,8 +60,6 @@ public class UDPHandler {
                 if (room == null) continue;
 
                 try {
-                    Console.WriteLine($"Received UDP from {senderOid} to {targetOid}, room has {room.GetPeers().Count} peers");
-
                     if (targetOid == "0") {
                         // Broadcast to all peers except sender
                         foreach (var peer in room.GetPeers()) {
@@ -78,15 +76,11 @@ public class UDPHandler {
                     }
                     else {
                         // Send to specific peer
-                        Console.WriteLine($"Trying to relay to specific peer {targetOid}");
                         if (room.HasPeer(targetOid) && _oidToEndpoint.ContainsKey(targetOid)) {
-                            Console.WriteLine($"Relaying to {targetOid} at {_oidToEndpoint[targetOid]}");
                             
                             // Create a new relay packet with correct format
                             var relayPacket = CreateRelayPacket(senderOid, targetOid, gameData);
                             await _udp.SendAsync(relayPacket, _oidToEndpoint[targetOid]);
-                        } else {
-                            Console.WriteLine($"Cannot relay to {targetOid} - HasPeer: {room.HasPeer(targetOid)}, HasEndpoint: {_oidToEndpoint.ContainsKey(targetOid)}");
                         }
                     }
                 }
@@ -119,5 +113,16 @@ public class UDPHandler {
         packet.AddRange(gameData);
         
         return packet.ToArray();
+    }
+
+    public void HandlePeerDisconnected(string oid) {
+        _oidToEndpoint.TryRemove(oid, out _);
+        Console.WriteLine($"UDP: Removed peer {oid}");
+    }
+
+    public void HandlePeersDisconnected(IEnumerable<string> oids) {
+        foreach (var oid in oids) {
+            HandlePeerDisconnected(oid);
+        }
     }
 }

@@ -24,13 +24,16 @@ public class Room {
 
     public int AddPeer(string oid, TcpClient client) {
         Clients[oid] = client;
-        
-        var nid = _nextNid++;
-        _oidToNid[oid] = nid;
-        
-        Console.WriteLine($"Added Peer: {oid}({nid})");
-        
-        return nid;
+    
+        if (!_oidToNid.ContainsKey(oid)) {
+            var nid = _nextNid++;
+            _oidToNid[oid] = nid;
+            Console.WriteLine($"Added NEW Peer: {oid}({nid})");
+            return nid;
+        } else {
+            Console.WriteLine($"Updated EXISTING Peer: {oid}({_oidToNid[oid]})");
+            return _oidToNid[oid];
+        }
     }
 
     public void RemovePeer(string oid) {

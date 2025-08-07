@@ -10,6 +10,9 @@ public class NodeTunnel {
         var udpHandler = new UDPHandler(tcpHandler);
         var statusServer = new StatusServer(tcpHandler);
 
+        tcpHandler.PeerDisconnected += udpHandler.HandlePeerDisconnected;
+        tcpHandler.PeersDisconnected += udpHandler.HandlePeersDisconnected;
+        
         try {
             var tcpTask = tcpHandler.StartTcpAsync();
             Console.WriteLine("TCP Started");
