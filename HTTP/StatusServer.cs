@@ -11,7 +11,7 @@ public class StatusServer(TCPHandler tcp) {
     private readonly CancellationTokenSource _ct = new();
     
     public async Task StartAsync() {
-        _http.Prefixes.Add("http://*:8080");
+        _http.Prefixes.Add("http://*:8080/");
         _http.Start();
 
         while (!_ct.Token.IsCancellationRequested) {
