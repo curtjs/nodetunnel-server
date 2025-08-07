@@ -5,20 +5,22 @@ on:
     branches:
       - main
 
-jobs: 
+jobs:
   deploy:
     runs-on: ubuntu-latest
     
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v0.1.7
-        with: 
+        with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           script: |
+            export PATH="/usr/share/dotnet:$PATH"
             cd /root/nodetunnel-server
             git pull origin main
+            dotnet --version
             dotnet build -c Release
             pkill -f "dotnet.*NodeTunnel" || true
             nohup dotnet run --configuration Release > /dev/null 2>&1 &
