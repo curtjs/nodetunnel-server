@@ -4,5 +4,6 @@ public enum PacketType {
     Connect,
     Host,
     Join,
-    PeerList
+    PeerList,
+    LeaveRoom
 }

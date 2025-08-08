@@ -76,39 +76,14 @@ public class TCPHandler {
         }
     }
 
-    private void DisconnectClient(TcpClient client) {
+    private async Task DisconnectClient(TcpClient client) {
         if (!_tcpToOid.TryGetValue(client, out var oid)) return;
         
-        var room = GetRoomForPeer(oid);
-        if (room == null) return;
+        Console.WriteLine($"Disconnecting: {oid}");
 
-        if (room.Id == oid) {
-            Console.WriteLine($"Host {oid} disconnecting, closing room");
-
-            var allOids = room.Clients.Keys.ToList();
-            var clientsToClose = room.Clients.Values.Where(c => c != client).ToList();
-            _rooms.TryRemove(room.Id, out _);
-
-            foreach (var clientToClose in clientsToClose) {
-                try {
-                    clientToClose.Close();
-                    _tcpToOid.TryRemove(clientToClose, out _);
-                }
-                catch (Exception ex) {
-                    Console.WriteLine($"Error closing client: {ex.Message}");
-                }
-            }
-            
-            PeersDisconnected.Invoke(allOids);
-        }
-        else {
-            // disconnect myself
-            room.RemovePeer(oid);
-            _ = Task.Run(() => SendPeerList(room));
-            PeerDisconnected?.Invoke(oid);
-        }
-
-        _tcpToOid.TryRemove(client, out _);
+        await HandleLeaveRoom(client);
+        PeerDisconnected.Invoke(oid);
+        client.Close();
     }
 
     private async Task SendTcpMessage(TcpClient client, byte[] data) {
@@ -146,6 +121,10 @@ public class TCPHandler {
                 break;
             case PacketType.PeerList:
                 Console.WriteLine("Received Peer List Request");
+                break;
+            case PacketType.LeaveRoom:
+                Console.WriteLine("Leave Room Request");
+                HandleLeaveRoom(client);
                 break;
             default:
                 Console.WriteLine($"Unknown Packet Type: {pktType}");
@@ -214,11 +193,37 @@ public class TCPHandler {
         await SendTcpMessage(client, msg.ToArray());
         await SendPeerList(room);
     }
+
+    /**
+     * Gets called whenever the client requests to leave a room
+     */
+    private async Task HandleLeaveRoom(TcpClient client) {
+        if (!_tcpToOid.TryGetValue(client, out var oid)) return;
+        
+        var room = GetRoomForPeer(oid);
+        if (room == null) return;
+
+        if (room.Id == oid) {
+            Console.WriteLine($"Host {oid} disconnecting, closing room");
+
+            foreach (var tcpClient in room.Clients.Values) {
+                await SendLeaveRoom(tcpClient);
+            }
+            
+            _rooms.TryRemove(room.Id, out _);
+        }
+        else {
+            room.RemovePeer(oid);
+            _ = Task.Run(() => SendPeerList(room));
+            _ = Task.Run(() => SendLeaveRoom(client));
+        }
+    }
     
     /**
      * Sends an updated peer list to all clients in room
      */
     private async Task SendPeerList(Room room) {
+        Console.WriteLine($"Sending peer list to room: {room.Id}");
         var peers = room.GetPeers();
 
         var msg = new List<byte>();
@@ -232,8 +237,19 @@ public class TCPHandler {
         }
 
         foreach (var tcp in room.Clients.Values) {
+            Console.WriteLine($"Sending peer list to client: {_tcpToOid[tcp]}");
             await SendTcpMessage(tcp, msg.ToArray());
+            Console.WriteLine("Sent peer list!");
         }
+    }
+
+    private async Task SendLeaveRoom(TcpClient client) {
+        Console.WriteLine($"Sending leave room response to {_tcpToOid[client]}");
+        
+        var msg = new List<byte>();
+        msg.AddRange(ByteUtils.PackU32((uint)PacketType.LeaveRoom));
+
+        await SendTcpMessage(client, msg.ToArray());
     }
 
     /**
