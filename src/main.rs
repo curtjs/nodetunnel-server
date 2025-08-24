@@ -5,6 +5,7 @@ mod tcp;
 mod client;
 mod packet;
 mod utils;
+mod room;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
