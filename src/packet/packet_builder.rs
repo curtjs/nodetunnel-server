@@ -10,7 +10,9 @@ impl PacketBuilder {
         packet
     }
     
-    pub fn build_room_connect() -> Vec<u8> {
-        ByteUtils::pack_u32(PacketType::RoomConnect as u32)
+    pub fn build_connected_to_room(numeric_id: u32) -> Vec<u8> {
+        let mut packet = ByteUtils::pack_u32(PacketType::ConnectedToRoom as u32);
+        packet.extend(ByteUtils::pack_u32(numeric_id));
+        packet
     }
 }

@@ -105,7 +105,7 @@ impl ClientConnection {
 
             self.numeric_id = Some(numeric_id);
 
-            let packet = PacketBuilder::build_room_connect();
+            let packet = PacketBuilder::build_connected_to_room(numeric_id);
 
             match self.send_packet(packet).await {
                 Ok(_) => println!("Peer connected to room!"),
@@ -125,12 +125,24 @@ impl ClientConnection {
         let joiner_id = self.online_id.as_ref()
             .ok_or("No online ID set")?
             .clone();
-        
-        let mut rooms = self.rooms.write().await;
-        if let Some(room) = rooms.get_mut(&host_id) {
-            self.numeric_id = Some(room.add_peer(joiner_id));
-        } else {
-            return Err("Room not found".to_string());
+
+        {
+            let mut rooms = self.rooms.write().await;
+
+            if let Some(room) = rooms.get_mut(&host_id) {
+                self.numeric_id = Some(room.add_peer(joiner_id));
+            } else {
+                return Err("Room not found".to_string());
+            }
+        }
+
+        let packet = PacketBuilder::build_connected_to_room(
+            self.numeric_id.ok_or("No numeric ID set")?
+        );
+
+        match self.send_packet(packet).await {
+            Ok(_) => println!("Peer connected to room!"),
+            Err(e) => println!("Failed to send packet: {}", e)
         }
         
         Ok(())
