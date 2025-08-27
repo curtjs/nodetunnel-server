@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use crate::client::id_generator::IdGenerator;
 use crate::packet::packet_builder::PacketBuilder;
 use crate::packet::packet_type::PacketType;
@@ -13,31 +13,92 @@ pub struct ClientConnection {
     tcp_stream: TcpStream,
     online_id: Option<String>,
     numeric_id: Option<u32>,
-    rooms: Arc<RwLock<HashMap<String, Room>>>
+    rooms: Arc<RwLock<HashMap<String, Room>>>,
+    outgoing_sender: mpsc::UnboundedSender<Vec<u8>>,
+    outgoing_receiver: mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
 impl ClientConnection {
     pub fn new(tcp_stream: TcpStream, rooms: Arc<RwLock<HashMap<String, Room>>>) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+
         Self {
             tcp_stream,
             rooms,
             online_id: None,
             numeric_id: None,
+            outgoing_sender: tx,
+            outgoing_receiver: rx,
         }
     }
-    
+
     pub async fn handle_client(&mut self, id_gen: Arc<IdGenerator>) {
+        let mut outgoing_receiver = std::mem::replace(
+            &mut self.outgoing_receiver,
+            mpsc::unbounded_channel().1
+        );
+        
         loop {
-            match self.read_packet().await { 
-                Ok(packet) => {
-                    if let Err(e) = self.handle_packet(packet, &id_gen).await {
-                        println!("Error handling packet: {}", e);
+            tokio::select! {
+                // Handle incoming packets from TCP stream
+                packet_result = self.read_packet() => {
+                    match packet_result {
+                        Ok(packet) => {
+                            if let Err(e) = self.handle_packet(packet, &id_gen).await {
+                                println!("Error handling packet: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            println!("Error reading packet: {}", e);
+                            break;
+                        }
+                    }
+                }
+                
+                // Handle broadcasted packets (like peer lists)
+                Some(broadcast_packet) = outgoing_receiver.recv() => {
+                    if let Err(e) = self.send_packet_raw(broadcast_packet).await {
+                        println!("Error sending broadcast packet: {}", e);
                         break;
                     }
                 }
-                Err(e) => {
-                    println!("Error reading packet: {}", e);
+            }
+        }
+
+        // Remove this client from any rooms when connection ends
+        self.cleanup_on_disconnect().await;
+    }
+
+    async fn send_packet_raw(&mut self, packet: Vec<u8>) -> Result<(), String> {
+        let packet_len = ByteUtils::pack_u32(packet.len() as u32);
+
+        self.tcp_stream.write_all(&packet_len).await
+            .map_err(|e| format!("Failed to send length: {}", e))?;
+        self.tcp_stream.write_all(&packet).await
+            .map_err(|e| format!("Failed to send packet: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn cleanup_on_disconnect(&self) {
+        if let Some(online_id) = &self.online_id {
+            let mut rooms = self.rooms.write().await;
+
+            // Find which room this client was in and remove them
+            let mut room_to_update = None;
+            for (room_id, room) in rooms.iter_mut() {
+                if room.has_peer(online_id) {
+                    room.remove_peer(online_id);
+                    room_to_update = Some(room_id.clone());
                     break;
+                }
+            }
+
+            // Broadcast updated peer list to remaining room members
+            if let Some(room_id) = room_to_update {
+                if let Some(room) = rooms.get(&room_id) {
+                    room.broadcast_peer_list().await;
                 }
             }
         }
@@ -97,7 +158,8 @@ impl ClientConnection {
                 }
 
                 let mut room = Room::new(online_id.clone());
-                let numeric_id = room.add_peer(online_id.clone());
+                let numeric_id = room.add_peer(online_id.clone(), self.outgoing_sender.clone());
+                
                 rooms.insert(online_id.clone(), room);
 
                 numeric_id
@@ -118,10 +180,9 @@ impl ClientConnection {
 
     pub async fn handle_join(&mut self, data: &[u8]) -> Result<(), String> {
         let offset = 4;
-        
         let (host_id, _) = ByteUtils::unpack_str(data, offset)
             .ok_or("Failed to parse host ID")?;
-        
+
         let joiner_id = self.online_id.as_ref()
             .ok_or("No online ID set")?
             .clone();
@@ -130,7 +191,10 @@ impl ClientConnection {
             let mut rooms = self.rooms.write().await;
 
             if let Some(room) = rooms.get_mut(&host_id) {
-                self.numeric_id = Some(room.add_peer(joiner_id));
+                self.numeric_id = Some(room.add_peer(joiner_id, self.outgoing_sender.clone()));
+
+                // Broadcast updated peer list to all room members
+                room.broadcast_peer_list().await;
             } else {
                 return Err("Room not found".to_string());
             }
